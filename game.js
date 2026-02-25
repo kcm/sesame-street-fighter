@@ -13,14 +13,21 @@ const timerEl = document.getElementById("timer");
 const leftScoreEl = document.getElementById("left-score");
 const rightScoreEl = document.getElementById("right-score");
 const spriteStatusEl = document.getElementById("sprite-status");
+const raytraceStatusEl = document.getElementById("raytrace-status");
 
 const FLOOR_Y = 455;
 const GRAVITY = 0.75;
 const ROUND_TIME = 60;
 const WIN_ROUNDS = 2;
 const SPRITE_DIR = "./assets/sprites";
+const STAGE_BLOCKS = [
+  { x: 100, y: 180, w: 130, h: 190, color: "#ffdd9a" },
+  { x: 280, y: 220, w: 160, h: 150, color: "#ffc4c4" },
+  { x: 500, y: 170, w: 150, h: 200, color: "#d2e0ff" },
+  { x: 700, y: 210, w: 140, h: 160, color: "#ffe8c1" },
+];
 
-const keys = { a: false, d: false, w: false, f: false, g: false };
+const keys = { a: false, d: false, w: false, f: false, g: false, r: false };
 
 const fighters = [
   { name: "Elmo", color: "#f24236", speed: 4.8, power: 9, jump: 15, width: 70, height: 120 },
@@ -199,6 +206,7 @@ let rightRounds = 0;
 let timerInterval = null;
 let gameActive = false;
 let lastTime = 0;
+let raytraceEnabled = true;
 
 function buildSelection() {
   fighters.forEach((fighter) => {
@@ -263,6 +271,119 @@ function updateSpriteStatus() {
   }
 
   spriteStatusEl.textContent = `Sprite status: partial sprites loaded. Missing states -> ${player.name}: ${playerMissing.join(", ") || "none"} | ${cpu.name}: ${cpuMissing.join(", ") || "none"}`;
+}
+
+function updateRaytraceStatus() {
+  if (!raytraceStatusEl) return;
+  raytraceStatusEl.textContent = `Raytrace mode: ${raytraceEnabled ? "enabled" : "disabled"}`;
+}
+
+function pointInRect(px, py, r) {
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+}
+
+// Lightweight ray cast approximation for occlusion checks against stage blocks.
+function segmentIntersectsRect(a, b, rect) {
+  const samples = 20;
+  for (let i = 0; i <= samples; i += 1) {
+    const t = i / samples;
+    const x = a.x + (b.x - a.x) * t;
+    const y = a.y + (b.y - a.y) * t;
+    if (pointInRect(x, y, rect)) return true;
+  }
+  return false;
+}
+
+function isOccluded(light, target) {
+  return STAGE_BLOCKS.some((block) => segmentIntersectsRect(light, target, block));
+}
+
+function getLightSource(timeNow) {
+  const sway = Math.sin(timeNow * 0.00045) * 210;
+  return { x: canvas.width * 0.5 + sway, y: 78 };
+}
+
+function projectToGround(light, p) {
+  const dy = p.y - light.y;
+  if (Math.abs(dy) < 0.01) return { x: p.x, y: FLOOR_Y };
+  const t = (FLOOR_Y - light.y) / dy;
+  return { x: light.x + (p.x - light.x) * t, y: FLOOR_Y };
+}
+
+function drawRayTracedShadow(fighter, light) {
+  const topLeft = { x: fighter.x + 8, y: fighter.y + 8 };
+  const topRight = { x: fighter.x + fighter.width - 8, y: fighter.y + 8 };
+  const footLeft = { x: fighter.x + 8, y: FLOOR_Y - 2 };
+  const footRight = { x: fighter.x + fighter.width - 8, y: FLOOR_Y - 2 };
+
+  const projLeft = projectToGround(light, topLeft);
+  const projRight = projectToGround(light, topRight);
+
+  const shadowAlpha = isOccluded(light, { x: fighter.x + fighter.width * 0.5, y: fighter.y + 20 }) ? 0.22 : 0.32;
+  const grad = ctx.createLinearGradient(0, fighter.y, 0, FLOOR_Y + 20);
+  grad.addColorStop(0, `rgba(0,0,0,${shadowAlpha * 0.95})`);
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+
+  ctx.save();
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.moveTo(footLeft.x, footLeft.y);
+  ctx.lineTo(footRight.x, footRight.y);
+  ctx.lineTo(projRight.x, projRight.y + 20);
+  ctx.lineTo(projLeft.x, projLeft.y + 20);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawRayTraceLighting(light) {
+  ctx.save();
+
+  const sunGlow = ctx.createRadialGradient(light.x, light.y, 15, light.x, light.y, 220);
+  sunGlow.addColorStop(0, "rgba(255, 250, 195, 0.75)");
+  sunGlow.addColorStop(1, "rgba(255, 250, 195, 0)");
+  ctx.fillStyle = sunGlow;
+  ctx.beginPath();
+  ctx.arc(light.x, light.y, 220, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.globalCompositeOperation = "multiply";
+  ctx.fillStyle = "rgba(11, 24, 36, 0.12)";
+  ctx.fillRect(0, 0, canvas.width, FLOOR_Y);
+
+  ctx.globalCompositeOperation = "source-over";
+  const beams = 18;
+  for (let i = 0; i < beams; i += 1) {
+    const x = (i / (beams - 1)) * canvas.width;
+    const target = { x, y: FLOOR_Y };
+    if (isOccluded(light, target)) continue;
+
+    ctx.strokeStyle = "rgba(255, 243, 180, 0.06)";
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.moveTo(light.x, light.y);
+    ctx.lineTo(target.x, target.y);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawFighterBounceLight(fighter, light) {
+  const c = { x: fighter.x + fighter.width * 0.5, y: fighter.y + fighter.height * 0.42 };
+  const blocked = isOccluded(light, c);
+  const radius = fighter.width * 1.1;
+
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  const halo = ctx.createRadialGradient(c.x, c.y, 6, c.x, c.y, radius);
+  halo.addColorStop(0, blocked ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.22)");
+  halo.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = halo;
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 }
 
 function intersects(a, b) {
@@ -334,20 +455,14 @@ function drawBackground() {
   ctx.fillStyle = "#a0b6c6";
   ctx.fillRect(0, FLOOR_Y - 8, canvas.width, 8);
 
-  const blocks = [
-    [100, 180, 130, 190, "#ffdd9a"],
-    [280, 220, 160, 150, "#ffc4c4"],
-    [500, 170, 150, 200, "#d2e0ff"],
-    [700, 210, 140, 160, "#ffe8c1"],
-  ];
-  for (const b of blocks) {
-    ctx.fillStyle = b[4];
-    ctx.fillRect(b[0], b[1], b[2], b[3]);
+  for (const b of STAGE_BLOCKS) {
+    ctx.fillStyle = b.color;
+    ctx.fillRect(b.x, b.y, b.w, b.h);
     ctx.fillStyle = "#2d4958";
-    ctx.fillRect(b[0] + 18, b[1] + 20, 30, 38);
-    ctx.fillRect(b[0] + 65, b[1] + 20, 30, 38);
-    ctx.fillRect(b[0] + 18, b[1] + 80, 30, 38);
-    ctx.fillRect(b[0] + 65, b[1] + 80, 30, 38);
+    ctx.fillRect(b.x + 18, b.y + 20, 30, 38);
+    ctx.fillRect(b.x + 65, b.y + 20, 30, 38);
+    ctx.fillRect(b.x + 18, b.y + 80, 30, 38);
+    ctx.fillRect(b.x + 65, b.y + 80, 30, 38);
   }
 }
 
@@ -382,8 +497,18 @@ function updateRound() {
 
 function render() {
   drawBackground();
+  const light = getLightSource(performance.now());
+  if (raytraceEnabled) {
+    drawRayTraceLighting(light);
+    drawRayTracedShadow(player, light);
+    drawRayTracedShadow(cpu, light);
+  }
   player.draw();
   cpu.draw();
+  if (raytraceEnabled) {
+    drawFighterBounceLight(player, light);
+    drawFighterBounceLight(cpu, light);
+  }
   drawAttackBox(player);
   drawAttackBox(cpu);
 }
@@ -466,6 +591,10 @@ startBtn.addEventListener("click", () => {
 document.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   if (k in keys) keys[k] = true;
+  if (k === "r") {
+    raytraceEnabled = !raytraceEnabled;
+    updateRaytraceStatus();
+  }
   if (!gameActive) return;
 
   if (k === "f") player.tryAttack("jab");
@@ -480,5 +609,6 @@ document.addEventListener("keyup", (e) => {
 buildSelection();
 spawnFighters();
 refreshHud();
+updateRaytraceStatus();
 setTimeout(updateSpriteStatus, 120);
 requestAnimationFrame(tick);
