@@ -20,6 +20,7 @@ Then visit `http://localhost:8000`.
 - `W`: jump
 - `F`: jab
 - `G`: kick
+- `R`: toggle raytrace lighting/shadows
 
 ## Notes
 
