@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sesame Street Fighter</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="panel">
+        <h1>Sesame Street Fighter</h1>
+        <p class="tag">Browser-only parody fighting game</p>
+
+        <div class="picker">
+          <p>Choose your fighter:</p>
+          <div class="options" id="fighter-options"></div>
+        </div>
+
+        <div class="controls">
+          <p><strong>Controls:</strong> <code>A</code>/<code>D</code> move, <code>W</code> jump, <code>F</code> jab, <code>G</code> kick</p>
+          <p><strong>Goal:</strong> Win 2 rounds before your opponent.</p>
+        </div>
+        <p class="sprite-status" id="sprite-status">Sprite status: waiting for fighter selection.</p>
+
+        <button id="start-btn" disabled>Start Match</button>
+      </section>
+
+      <section class="arena-wrap">
+        <div class="hud">
+          <div class="name" id="left-name">Player</div>
+          <div class="bar"><div id="left-hp" class="hp"></div></div>
+          <div class="timer" id="timer">60</div>
+          <div class="bar"><div id="right-hp" class="hp enemy"></div></div>
+          <div class="name right" id="right-name">CPU</div>
+        </div>
+
+        <canvas id="arena" width="960" height="540"></canvas>
+
+        <div class="overlay" id="overlay">
+          <p id="overlay-text">Pick a fighter to begin.</p>
+        </div>
+
+        <div class="scoreline">
+          <span id="left-score">0</span>
+          <span>Rounds</span>
+          <span id="right-score">0</span>
+        </div>
+      </section>
+    </main>
+
+    <script src="./game.js"></script>
+  </body>
+</html>
