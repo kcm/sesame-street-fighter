@@ -282,20 +282,40 @@ function pointInRect(px, py, r) {
   return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
 }
 
-// Lightweight ray cast approximation for occlusion checks against stage blocks.
+// Exact line-AABB intersection via Liang-Barsky clipping.
 function segmentIntersectsRect(a, b, rect) {
-  const samples = 20;
-  for (let i = 0; i <= samples; i += 1) {
-    const t = i / samples;
-    const x = a.x + (b.x - a.x) * t;
-    const y = a.y + (b.y - a.y) * t;
-    if (pointInRect(x, y, rect)) return true;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const ps = [-dx, dx, -dy, dy];
+  const qs = [a.x - rect.x, rect.x + rect.w - a.x, a.y - rect.y, rect.y + rect.h - a.y];
+  let t0 = 0;
+  let t1 = 1;
+  for (let i = 0; i < 4; i++) {
+    if (ps[i] === 0) {
+      if (qs[i] < 0) return false;
+    } else {
+      const t = qs[i] / ps[i];
+      if (ps[i] < 0) { if (t > t0) t0 = t; } else { if (t < t1) t1 = t; }
+    }
   }
-  return false;
+  return t0 <= t1;
 }
 
 function isOccluded(light, target) {
   return STAGE_BLOCKS.some((block) => segmentIntersectsRect(light, target, block));
+}
+
+// Area-light soft shadow: samples 8 points around the light disc, returns 0 (fully lit) – 1 (fully shadowed).
+function occlusionFraction(light, target) {
+  const SAMPLES = 8;
+  const RADIUS = 22;
+  let blocked = 0;
+  for (let i = 0; i < SAMPLES; i++) {
+    const angle = (i / SAMPLES) * Math.PI * 2;
+    const sample = { x: light.x + Math.cos(angle) * RADIUS, y: light.y + Math.sin(angle) * RADIUS * 0.25 };
+    if (STAGE_BLOCKS.some((b) => segmentIntersectsRect(sample, target, b))) blocked++;
+  }
+  return blocked / SAMPLES;
 }
 
 function getLightSource(timeNow) {
@@ -311,26 +331,41 @@ function projectToGround(light, p) {
 }
 
 function drawRayTracedShadow(fighter, light) {
-  const topLeft = { x: fighter.x + 8, y: fighter.y + 8 };
-  const topRight = { x: fighter.x + fighter.width - 8, y: fighter.y + 8 };
-  const footLeft = { x: fighter.x + 8, y: FLOOR_Y - 2 };
-  const footRight = { x: fighter.x + fighter.width - 8, y: FLOOR_Y - 2 };
+  const cx = fighter.x + fighter.width * 0.5;
+  const occ = occlusionFraction(light, { x: cx, y: fighter.y + fighter.height * 0.4 });
 
-  const projLeft = projectToGround(light, topLeft);
+  // Contact shadow: dark ellipse at feet, always present regardless of light angle.
+  ctx.save();
+  ctx.filter = "blur(5px)";
+  ctx.globalAlpha = 0.45 - occ * 0.18;
+  ctx.fillStyle = "#000";
+  ctx.beginPath();
+  ctx.ellipse(cx, FLOOR_Y - 1, fighter.width * 0.44, 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Projected shadow trapezoid with soft penumbra edges.
+  const topLeft  = { x: fighter.x + 8,                y: fighter.y + 8 };
+  const topRight = { x: fighter.x + fighter.width - 8, y: fighter.y + 8 };
+  const footLeft  = { x: fighter.x + 8,                y: FLOOR_Y - 2 };
+  const footRight = { x: fighter.x + fighter.width - 8, y: FLOOR_Y - 2 };
+  const projLeft  = projectToGround(light, topLeft);
   const projRight = projectToGround(light, topRight);
 
-  const shadowAlpha = isOccluded(light, { x: fighter.x + fighter.width * 0.5, y: fighter.y + 20 }) ? 0.22 : 0.32;
-  const grad = ctx.createLinearGradient(0, fighter.y, 0, FLOOR_Y + 20);
-  grad.addColorStop(0, `rgba(0,0,0,${shadowAlpha * 0.95})`);
-  grad.addColorStop(1, "rgba(0,0,0,0)");
+  const baseAlpha = 0.38 - occ * 0.22;
+  const grad = ctx.createLinearGradient(0, fighter.y + fighter.height * 0.5, 0, FLOOR_Y + 60);
+  grad.addColorStop(0,    `rgba(0,0,0,${baseAlpha.toFixed(3)})`);
+  grad.addColorStop(0.55, `rgba(0,0,0,${(baseAlpha * 0.45).toFixed(3)})`);
+  grad.addColorStop(1,    "rgba(0,0,0,0)");
 
   ctx.save();
+  ctx.filter = "blur(3px)";
   ctx.fillStyle = grad;
   ctx.beginPath();
-  ctx.moveTo(footLeft.x, footLeft.y);
+  ctx.moveTo(footLeft.x,  footLeft.y);
   ctx.lineTo(footRight.x, footRight.y);
-  ctx.lineTo(projRight.x, projRight.y + 20);
-  ctx.lineTo(projLeft.x, projLeft.y + 20);
+  ctx.lineTo(projRight.x, projRight.y + 30);
+  ctx.lineTo(projLeft.x,  projLeft.y + 30);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
@@ -339,50 +374,94 @@ function drawRayTracedShadow(fighter, light) {
 function drawRayTraceLighting(light) {
   ctx.save();
 
-  const sunGlow = ctx.createRadialGradient(light.x, light.y, 15, light.x, light.y, 220);
-  sunGlow.addColorStop(0, "rgba(255, 250, 195, 0.75)");
-  sunGlow.addColorStop(1, "rgba(255, 250, 195, 0)");
+  // Sun glow — warmer, larger, with a hot inner core.
+  const sunGlow = ctx.createRadialGradient(light.x, light.y, 8, light.x, light.y, 300);
+  sunGlow.addColorStop(0,    "rgba(255, 252, 210, 0.90)");
+  sunGlow.addColorStop(0.18, "rgba(255, 238, 160, 0.55)");
+  sunGlow.addColorStop(0.55, "rgba(255, 225, 120, 0.18)");
+  sunGlow.addColorStop(1,    "rgba(255, 220, 100, 0)");
   ctx.fillStyle = sunGlow;
   ctx.beginPath();
-  ctx.arc(light.x, light.y, 220, 0, Math.PI * 2);
+  ctx.arc(light.x, light.y, 300, 0, Math.PI * 2);
   ctx.fill();
 
+  // Atmospheric darkening pass.
   ctx.globalCompositeOperation = "multiply";
-  ctx.fillStyle = "rgba(11, 24, 36, 0.12)";
+  ctx.fillStyle = "rgba(11, 24, 36, 0.14)";
   ctx.fillRect(0, 0, canvas.width, FLOOR_Y);
 
+  // God rays — 36 beams, varied width and brightness for a volumetric feel.
   ctx.globalCompositeOperation = "source-over";
-  const beams = 18;
-  for (let i = 0; i < beams; i += 1) {
-    const x = (i / (beams - 1)) * canvas.width;
+  const BEAMS = 36;
+  for (let i = 0; i < BEAMS; i++) {
+    const x = (i / (BEAMS - 1)) * canvas.width;
     const target = { x, y: FLOOR_Y };
     if (isOccluded(light, target)) continue;
 
-    ctx.strokeStyle = "rgba(255, 243, 180, 0.06)";
-    ctx.lineWidth = 1.3;
+    const accent = i % 6 === 0;
+    ctx.strokeStyle = accent ? "rgba(255, 245, 190, 0.11)" : "rgba(255, 243, 175, 0.048)";
+    ctx.lineWidth = accent ? 2.4 : 0.9;
     ctx.beginPath();
     ctx.moveTo(light.x, light.y);
     ctx.lineTo(target.x, target.y);
     ctx.stroke();
   }
 
+  // Ambient occlusion: soft shadow pooling at the base of stage blocks.
+  ctx.globalCompositeOperation = "multiply";
+  for (const b of STAGE_BLOCKS) {
+    const ao = ctx.createLinearGradient(0, b.y + b.h - 4, 0, b.y + b.h + 26);
+    ao.addColorStop(0, "rgba(0,0,0,0.30)");
+    ao.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = ao;
+    ctx.fillRect(b.x - 5, b.y + b.h - 4, b.w + 10, 30);
+  }
+
   ctx.restore();
 }
 
 function drawFighterBounceLight(fighter, light) {
-  const c = { x: fighter.x + fighter.width * 0.5, y: fighter.y + fighter.height * 0.42 };
-  const blocked = isOccluded(light, c);
-  const radius = fighter.width * 1.1;
+  const cx = fighter.x + fighter.width * 0.5;
+  const cy = fighter.y + fighter.height * 0.42;
+  const blocked = isOccluded(light, { x: cx, y: cy });
+  const radius = fighter.width * 1.15;
+  const lightDir = light.x > cx ? 1 : -1;
 
   ctx.save();
   ctx.globalCompositeOperation = "screen";
-  const halo = ctx.createRadialGradient(c.x, c.y, 6, c.x, c.y, radius);
-  halo.addColorStop(0, blocked ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.22)");
-  halo.addColorStop(1, "rgba(255,255,255,0)");
+
+  // Main ambient halo.
+  const halo = ctx.createRadialGradient(cx, cy, 4, cx, cy, radius);
+  halo.addColorStop(0, blocked ? "rgba(255,255,220,0.04)" : "rgba(255,255,220,0.20)");
+  halo.addColorStop(1, "rgba(255,255,220,0)");
   ctx.fillStyle = halo;
   ctx.beginPath();
-  ctx.arc(c.x, c.y, radius, 0, Math.PI * 2);
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
   ctx.fill();
+
+  // Directional specular: warm highlight on the light-facing edge.
+  if (!blocked) {
+    const hlX = cx + lightDir * fighter.width * 0.28;
+    const hlY = cy - fighter.height * 0.08;
+    const spec = ctx.createRadialGradient(hlX, hlY, 2, hlX, hlY, fighter.width * 0.62);
+    spec.addColorStop(0, "rgba(255, 252, 200, 0.30)");
+    spec.addColorStop(1, "rgba(255, 252, 200, 0)");
+    ctx.fillStyle = spec;
+    ctx.beginPath();
+    ctx.arc(hlX, hlY, fighter.width * 0.62, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Cool rim light on the shadow side.
+  const rimX = cx - lightDir * fighter.width * 0.36;
+  const rim = ctx.createRadialGradient(rimX, cy, 2, rimX, cy, fighter.width * 0.52);
+  rim.addColorStop(0, "rgba(130, 190, 255, 0.13)");
+  rim.addColorStop(1, "rgba(130, 190, 255, 0)");
+  ctx.fillStyle = rim;
+  ctx.beginPath();
+  ctx.arc(rimX, cy, fighter.width * 0.52, 0, Math.PI * 2);
+  ctx.fill();
+
   ctx.restore();
 }
 
