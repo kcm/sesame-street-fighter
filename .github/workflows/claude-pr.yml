@@ -1,8 +1,8 @@
-name: Claude handles PR
+name: Claude handles issue
 
 on:
-  pull_request:
-    types: [opened, edited, reopened, synchronize]
+  issues:
+    types: [opened, edited, reopened]
 
 permissions:
   contents: write
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   claude:
-    if: contains(github.event.pull_request.body, 'Claude can handle this')
+    if: contains(github.event.issue.body, 'Claude can handle this')
     runs-on: ubuntu-latest
     steps:
       - uses: anthropics/claude-code-action@v1
